@@ -97,15 +97,18 @@ export class TwitterPostClient {
     runtime: IAgentRuntime;
     twitterUsername: string;
     private isProcessing: boolean = false;
-    private lastProcessTime: number = 0;
+    private lastProcessTime: number = Date.now(); // Initialize this when the client starts
     private stopProcessingActions: boolean = false;
 
     async start(postImmediately: boolean = false) {
+        elizaLogger.log("=== Twitter Post Client Starting ===");
         if (!this.client.profile) {
+            elizaLogger.log("Initializing client profile...");
             await this.client.init();
         }
 
         const generateNewTweetLoop = async () => {
+            elizaLogger.log("=== Tweet Loop Debug ===");
             const lastPost = await this.runtime.cacheManager.get<{
                 timestamp: number;
             }>("twitter/" + this.twitterUsername + "/lastPost");
@@ -120,43 +123,26 @@ export class TwitterPostClient {
                 minMinutes;
             const delay = randomMinutes * 60 * 1000;
 
+            elizaLogger.log(`Last post time: ${lastPostTimestamp ? new Date(lastPostTimestamp).toISOString() : 'never'}`);
+            elizaLogger.log(`Current time: ${new Date().toISOString()}`);
+            elizaLogger.log(`Min interval: ${minMinutes} minutes`);
+            elizaLogger.log(`Max interval: ${maxMinutes} minutes`);
+            elizaLogger.log(`Chosen interval: ${randomMinutes} minutes`);
+            elizaLogger.log(`Time since last post: ${lastPostTimestamp ? Math.floor((Date.now() - lastPostTimestamp) / 1000 / 60) : 'N/A'} minutes`);
+
             if (Date.now() > lastPostTimestamp + delay) {
+                elizaLogger.log("Time to post new tweet");
                 await this.generateNewTweet();
+            } else {
+                elizaLogger.log(`Waiting ${Math.floor((lastPostTimestamp + delay - Date.now()) / 1000 / 60)} minutes until next post`);
             }
 
+            elizaLogger.log(`Setting next check in ${randomMinutes} minutes`);
             setTimeout(() => {
                 generateNewTweetLoop(); // Set up next iteration
             }, delay);
 
-            elizaLogger.log(`Next tweet scheduled in ${randomMinutes} minutes`);
-        };
-
-        const processActionsLoop = async () => {
-            const actionInterval =
-                parseInt(this.runtime.getSetting("ACTION_INTERVAL")) || 300000; // Default to 5 minutes
-
-            while (!this.stopProcessingActions) {
-                try {
-                    const results = await this.processTweetActions();
-                    if (results) {
-                        elizaLogger.log(`Processed ${results.length} tweets`);
-                        elizaLogger.log(
-                            `Next action processing scheduled in ${actionInterval / 1000} seconds`
-                        );
-                        // Wait for the full interval before next processing
-                        await new Promise((resolve) =>
-                            setTimeout(resolve, actionInterval)
-                        );
-                    }
-                } catch (error) {
-                    elizaLogger.error(
-                        "Error in action processing loop:",
-                        error
-                    );
-                    // Add exponential backoff on error
-                    await new Promise((resolve) => setTimeout(resolve, 30000)); // Wait 30s on error
-                }
-            }
+            elizaLogger.log("=== End Tweet Loop ===");
         };
 
         if (
@@ -178,6 +164,38 @@ export class TwitterPostClient {
             this.runtime.getSetting("ENABLE_ACTION_PROCESSING") ?? false;
 
         if (enableActionProcessing) {
+            const processActionsLoop = async () => {
+                const actionInterval =
+                    parseInt(this.runtime.getSetting("ACTION_INTERVAL")) || 300000; // Default to 5 minutes
+
+                elizaLogger.log(`Action processing interval set to ${actionInterval / 1000} seconds`);
+
+                while (!this.stopProcessingActions) {
+                    try {
+                        // Add timestamp check to prevent too-frequent processing
+                        const timeSinceLastProcess = Date.now() - this.lastProcessTime;
+                        elizaLogger.log(`Time since last process: ${Math.floor(timeSinceLastProcess / 1000)}s (need ${actionInterval / 1000}s)`);
+                        
+                        if (timeSinceLastProcess < actionInterval) {
+                            const waitTime = actionInterval - timeSinceLastProcess;
+                            elizaLogger.log(`Waiting ${Math.floor(waitTime / 1000)}s before next action processing`);
+                            await new Promise((resolve) => setTimeout(resolve, waitTime));
+                            continue;
+                        }
+
+                        const results = await this.processTweetActions();
+                        if (results) {
+                            elizaLogger.log(`Processed ${results.length} tweets`);
+                            this.lastProcessTime = Date.now(); // Update timestamp after successful processing
+                            elizaLogger.log(`Updated last process time to ${new Date(this.lastProcessTime).toISOString()}`);
+                        }
+                    } catch (error) {
+                        elizaLogger.error("Error in action processing loop:", error);
+                        await new Promise((resolve) => setTimeout(resolve, 60000));
+                    }
+                }
+            };
+
             processActionsLoop().catch((error) => {
                 elizaLogger.error(
                     "Fatal error in process actions loop:",
@@ -187,7 +205,6 @@ export class TwitterPostClient {
         } else {
             elizaLogger.log("Action processing loop disabled by configuration");
         }
-        generateNewTweetLoop();
     }
 
     constructor(client: ClientBase, runtime: IAgentRuntime) {
@@ -197,7 +214,8 @@ export class TwitterPostClient {
     }
 
     private async generateNewTweet() {
-        elizaLogger.log("Generating new tweet");
+        elizaLogger.log("=== Tweet Generation Debug ===");
+        elizaLogger.log("Attempting to generate new tweet");
 
         try {
             const roomId = stringToUuid(
@@ -292,10 +310,16 @@ export class TwitterPostClient {
             // Final cleaning
             cleanedContent = removeQuotes(fixNewLines(content));
 
+            const lastPost = await this.runtime.cacheManager.get<{
+                timestamp: number;
+            }>("twitter/" + this.twitterUsername + "/lastPost");
+
+            elizaLogger.log(`Last post timestamp: ${lastPost?.timestamp ? new Date(lastPost.timestamp).toISOString() : 'never'}`);
+            elizaLogger.log(`Current time: ${new Date().toISOString()}`);
+            elizaLogger.log(`Time since last post: ${lastPost?.timestamp ? Math.floor((Date.now() - lastPost.timestamp) / 1000 / 60) : 'N/A'} minutes`);
+
             if (this.runtime.getSetting("TWITTER_DRY_RUN") === "true") {
-                elizaLogger.info(
-                    `Dry run: would have posted tweet: ${cleanedContent}`
-                );
+                elizaLogger.log("[DRY RUN] Would have tweeted:", cleanedContent);
                 return;
             }
 
@@ -373,6 +397,8 @@ export class TwitterPostClient {
             }
         } catch (error) {
             elizaLogger.error("Error generating new tweet:", error);
+        } finally {
+            elizaLogger.log("=== End Tweet Generation ===");
         }
     }
 
@@ -455,8 +481,24 @@ export class TwitterPostClient {
 
         try {
             this.isProcessing = true;
-            this.lastProcessTime = Date.now();
 
+            // Check when our last action processing was
+            const timeSinceLastProcess = Date.now() - this.lastProcessTime;
+            const actionInterval = parseInt(this.runtime.getSetting("ACTION_INTERVAL")) || 300000; // 5 minutes default
+
+            elizaLogger.log("=== Action Processing Timing ===");
+            elizaLogger.log(`Last check: ${this.lastProcessTime ? new Date(this.lastProcessTime).toISOString() : 'never'}`);
+            elizaLogger.log(`Current time: ${new Date().toISOString()}`);
+            elizaLogger.log(`Time since last check: ${Math.floor(timeSinceLastProcess / 1000)}s`);
+            elizaLogger.log(`Required interval: ${actionInterval / 1000}s`);
+
+            if (timeSinceLastProcess < actionInterval) {
+                elizaLogger.log(`Waiting ${Math.floor((actionInterval - timeSinceLastProcess) / 1000)}s before next action check`);
+                elizaLogger.log("=== End Action Processing ===");
+                return null;
+            }
+
+            this.lastProcessTime = Date.now();
             elizaLogger.log("Processing tweet actions");
 
             await this.runtime.ensureUserExists(

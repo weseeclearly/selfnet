@@ -9,6 +9,8 @@ concatenated-output.ts
 embedding-cache.json
 packages/plugin-buttplug/intiface-engine
 
+characters/
+
 .DS_Store
 
 dist/
@@ -36,7 +38,7 @@ tweetcache/
 twitter_cookies.json
 timeline_cache.json
 
-*.sqlite
+ *.sqlite
 
 packages/core/src/providers/cache
 packages/core/src/providers/cache/*
@@ -51,5 +53,5 @@ tsup.config.bundled_*.mjs
 coverage
 .eslintcache
 
-agent/content
+# agent/content
 node_modules

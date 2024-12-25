@@ -89,6 +89,8 @@ Thread of Tweets You Are Replying To:
 export class TwitterInteractionClient {
     client: ClientBase;
     runtime: IAgentRuntime;
+    private lastInteractionTime: number = Date.now();
+
     constructor(client: ClientBase, runtime: IAgentRuntime) {
         this.client = client;
         this.runtime = runtime;
@@ -109,6 +111,18 @@ export class TwitterInteractionClient {
 
     async handleTwitterInteractions() {
         elizaLogger.log("Checking Twitter interactions");
+        
+        // Check and respect interaction interval
+        const actionInterval = parseInt(this.runtime.getSetting("ACTION_INTERVAL")) || 300000;
+        const timeSinceLastInteraction = Date.now() - this.lastInteractionTime;
+        
+        if (timeSinceLastInteraction < actionInterval) {
+            const waitTime = actionInterval - timeSinceLastInteraction;
+            elizaLogger.log(`Waiting ${Math.floor(waitTime / 1000)}s before next interaction processing`);
+            await new Promise((resolve) => setTimeout(resolve, waitTime));
+            return;
+        }
+
         // Read from environment variable, fallback to default list if not set
         const targetUsersStr = this.runtime.getSetting("TWITTER_TARGET_USERS");
 
@@ -250,43 +264,12 @@ export class TwitterInteractionClient {
                     }
                     elizaLogger.log("New Tweet found", tweet.permanentUrl);
 
-                    const roomId = stringToUuid(
-                        tweet.conversationId + "-" + this.runtime.agentId
-                    );
-
-                    const userIdUUID =
-                        tweet.userId === this.client.profile.id
-                            ? this.runtime.agentId
-                            : stringToUuid(tweet.userId!);
-
-                    await this.runtime.ensureConnection(
-                        userIdUUID,
-                        roomId,
-                        tweet.username,
-                        tweet.name,
-                        "twitter"
-                    );
-
-                    const thread = await buildConversationThread(
-                        tweet,
-                        this.client
-                    );
-
-                    const message = {
-                        content: { text: tweet.text },
-                        agentId: this.runtime.agentId,
-                        userId: userIdUUID,
-                        roomId,
-                    };
-
-                    await this.handleTweet({
-                        tweet,
-                        message,
-                        thread,
-                    });
-
-                    // Update the last checked tweet ID after processing each tweet
-                    this.client.lastCheckedTweetId = BigInt(tweet.id);
+                    // Process the tweet and update last interaction time
+                    await this.handleTweet({ tweet, message: null, thread: [] });
+                    this.lastInteractionTime = Date.now();
+                    
+                    // Wait for the action interval before processing next tweet
+                    await new Promise((resolve) => setTimeout(resolve, actionInterval));
                 }
             }
 
@@ -352,7 +335,10 @@ export class TwitterInteractionClient {
         });
 
         // check if the tweet exists, save if it doesn't
-        const tweetId = stringToUuid(tweet.id + "-" + this.runtime.agentId);
+        const tweetId = stringToUuid(
+            tweet.id + "-" + this.runtime.agentId
+        );
+
         const tweetExists =
             await this.runtime.messageManager.getMemoryById(tweetId);
 
